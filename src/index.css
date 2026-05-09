@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-gray-100 text-gray-900;
+}
+
+/* Make all text bigger + bold-ish */
+* {
+  @apply font-semibold text-gray-900;
+}
+
+p,
+span,
+input,
+button,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  @apply text-base font-bold;
+}
+
+h1 { @apply text-3xl font-extrabold; }
+
