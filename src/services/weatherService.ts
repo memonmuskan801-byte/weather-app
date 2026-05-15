@@ -1,4 +1,9 @@
-import type { WeatherType } from "../types/weather";
+import type {
+  CitySuggestion,
+  ForecastType,
+  Unit,
+  WeatherType,
+} from "../types/weather";
 
 type OpenWeatherErrorResponse = { message?: string };
 
@@ -6,6 +11,43 @@ type OpenWeatherGeocodingCity = {
   name?: string;
   state?: string;
   country?: string;
+  lat?: number;
+  lon?: number;
+};
+
+const CACHE_TTL = 10 * 60 * 1000;
+const memoryCache = new Map<string, { expiresAt: number; value: unknown }>();
+
+const getApiKey = () => {
+  const API_KEY = import.meta.env.VITE_API_KEY;
+  if (!API_KEY) {
+    throw new Error("Missing API key: set VITE_API_KEY in your .env file");
+  }
+  return API_KEY;
+};
+
+const fetchJson = async <T>(url: string, signal?: AbortSignal): Promise<T> => {
+  const cached = memoryCache.get(url);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value as T;
+  }
+
+  const res = await fetch(url, { signal });
+
+  if (!res.ok) {
+    let message = "Weather request failed";
+    try {
+      const err = (await res.json()) as OpenWeatherErrorResponse;
+      message = err.message || message;
+    } catch {
+      message = res.statusText || message;
+    }
+    throw new Error(message);
+  }
+
+  const value = (await res.json()) as T;
+  memoryCache.set(url, { expiresAt: Date.now() + CACHE_TTL, value });
+  return value;
 };
 
 const formatCityLabel = (c: OpenWeatherGeocodingCity) => {
@@ -14,94 +56,108 @@ const formatCityLabel = (c: OpenWeatherGeocodingCity) => {
   const country = c?.country?.trim();
 
   if (!name) return "";
-
-  // Prefer: City, State (if present) / else City, Country
-  if (state && state.length > 0) {
-    return country ? `${name}, ${state}, ${country}` : `${name}, ${state}`;
-  }
-
+  if (state) return country ? `${name}, ${state}, ${country}` : `${name}, ${state}`;
   return country ? `${name}, ${country}` : name;
 };
 
-export const getWeather = async (city: string): Promise<WeatherType> => {
-  const API_KEY = import.meta.env.VITE_API_KEY;
-
-  const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(
-    city
-  )}&appid=${API_KEY}&units=metric`;
-
-  const res = await fetch(url);
-
-  if (!res.ok) {
-    const err = (await res.json()) as OpenWeatherErrorResponse;
-    throw new Error(err.message || "City not found");
+const toCitySuggestion = (city: OpenWeatherGeocodingCity): CitySuggestion | null => {
+  if (!city.name || typeof city.lat !== "number" || typeof city.lon !== "number") {
+    return null;
   }
 
-  return (await res.json()) as WeatherType;
+  return {
+    id: `${city.name}-${city.state || ""}-${city.country || ""}-${city.lat}-${city.lon}`.toLowerCase(),
+    label: formatCityLabel(city),
+    name: city.name,
+    state: city.state,
+    country: city.country,
+    lat: city.lat,
+    lon: city.lon,
+  };
 };
 
-// Autocomplete (partial matching) using OpenWeather geocoding API
-export const searchCities = async (
-  query: string,
+export const getWeather = async (
+  city: string,
+  units: Unit = "metric",
   signal?: AbortSignal
-): Promise<string[]> => {
-  const API_KEY = import.meta.env.VITE_API_KEY;
+): Promise<WeatherType> => {
+  const API_KEY = getApiKey();
+  const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(
+    city
+  )}&appid=${API_KEY}&units=${units}`;
 
-  const url = `https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(
-    query
-  )}&limit=8&appid=${API_KEY}`;
+  return fetchJson<WeatherType>(url, signal);
+};
 
-  const res = await fetch(url, { signal });
-  if (!res.ok) {
-    // Geocoding returns non-200 on invalid queries sometimes
-    return [];
-  }
+export const getForecast = async (
+  city: string,
+  units: Unit = "metric",
+  signal?: AbortSignal
+): Promise<ForecastType> => {
+  const API_KEY = getApiKey();
+  const url = `https://api.openweathermap.org/data/2.5/forecast?q=${encodeURIComponent(
+    city
+  )}&appid=${API_KEY}&units=${units}`;
 
-  const results = (await res.json()) as OpenWeatherGeocodingCity[];
+  return fetchJson<ForecastType>(url, signal);
+};
 
-  const labels = (results || [])
-    .map((r) => formatCityLabel(r))
-    .filter((n) => typeof n === "string" && n.trim().length > 0);
+export const getWeatherByCoords = async (
+  lat: number,
+  lon: number,
+  units: Unit = "metric",
+  signal?: AbortSignal
+): Promise<WeatherType> => {
+  const API_KEY = getApiKey();
+  const url = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${API_KEY}&units=${units}`;
 
-  // Dedupe and keep stable order
-  return Array.from(new Set(labels));
+  return fetchJson<WeatherType>(url, signal);
+};
+
+export const getForecastByCoords = async (
+  lat: number,
+  lon: number,
+  units: Unit = "metric",
+  signal?: AbortSignal
+): Promise<ForecastType> => {
+  const API_KEY = getApiKey();
+  const url = `https://api.openweathermap.org/data/2.5/forecast?lat=${lat}&lon=${lon}&appid=${API_KEY}&units=${units}`;
+
+  return fetchJson<ForecastType>(url, signal);
+};
+
+export const reverseGeocode = async (
+  lat: number,
+  lon: number,
+  signal?: AbortSignal
+): Promise<string> => {
+  const API_KEY = getApiKey();
+  const url = `https://api.openweathermap.org/geo/1.0/reverse?lat=${lat}&lon=${lon}&limit=1&appid=${API_KEY}`;
+  const results = await fetchJson<OpenWeatherGeocodingCity[]>(url, signal);
+
+  return formatCityLabel(results[0]) || "Current location";
 };
 
 export const searchCitiesByCountry = async (
   cityQuery: string,
   country: string,
   signal?: AbortSignal
-): Promise<string[]> => {
+): Promise<CitySuggestion[]> => {
   const normalizedCity = cityQuery.trim();
   const normalizedCountry = country.trim();
   if (!normalizedCity || !normalizedCountry) return [];
 
-  const API_KEY = import.meta.env.VITE_API_KEY;
-  if (!API_KEY) {
-    throw new Error("Missing API key: set VITE_API_KEY in your .env");
-  }
-
-  // Call geocoding with country appended.
+  const API_KEY = getApiKey();
   const url = `https://api.openweathermap.org/geo/1.0/direct?q=${encodeURIComponent(
     `${normalizedCity}, ${normalizedCountry}`
   )}&limit=8&appid=${API_KEY}`;
 
-  const res = await fetch(url, { signal });
-  if (!res.ok) return [];
-
-  const results = (await res.json()) as OpenWeatherGeocodingCity[];
-
+  const results = await fetchJson<OpenWeatherGeocodingCity[]>(url, signal);
   const countryNeedleLower = normalizedCountry.toLowerCase();
 
   const matchesCountry = (r: OpenWeatherGeocodingCity) => {
     const rCountryLower = (r?.country || "").trim().toLowerCase();
-    if (rCountryLower) {
-      // Exact match on returned `country` field.
-      if (rCountryLower === countryNeedleLower) return true;
-
-      // Some OpenWeather responses may include country codes/abbreviations.
-      // We still try to match via the formatted label.
-    }
+    if (rCountryLower && rCountryLower === countryNeedleLower) return true;
 
     const labelLower = formatCityLabel(r).toLowerCase();
     return (
@@ -110,23 +166,13 @@ export const searchCitiesByCountry = async (
     );
   };
 
-  // Primary filtering: keep only results that match the requested country.
-  let filtered = (results || []).filter(matchesCountry);
+  const filtered = results.filter(matchesCountry);
+  const candidates = filtered.length > 0 ? filtered : results.slice(0, 8);
+  const suggestions = candidates
+    .map((r) => toCitySuggestion(r))
+    .filter((item): item is CitySuggestion => Boolean(item));
 
-  // Fallback: if strict filtering returns nothing, show the best candidates.
-  // This fixes cases where OpenWeather returns a non-matching country string/format.
-  if (filtered.length === 0) {
-    filtered = (results || []).slice(0, 8);
-  }
-
-  const labels = filtered
-    .map((r) => formatCityLabel(r))
-    .filter((n) => typeof n === "string" && n.trim().length > 0);
-
-  return Array.from(new Set(labels));
+  return Array.from(
+    new Map(suggestions.map((item) => [item.id, item])).values()
+  );
 };
-
-
-
-
-
